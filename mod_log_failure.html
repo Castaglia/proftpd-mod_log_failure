@@ -32,26 +32,12 @@ questions, concerns, or suggestions regarding this module.
 
 <h2>Directives</h2>
 <ul>
-  <li><a href="#FailureEngine">FailureEngine</a>
   <li><a href="#FailureLog">FailureLog</a>
 </ul>
 
 <p>
 <hr>
-<h3><a name="FailureEngine">FailureEngine</a></h3>
-<strong>Syntax:</strong> FailureEngine <em>on|off</em><br>
-<strong>Default:</strong> None<br>
-<strong>Context:</strong> server config, <code>&lt;VirtualHost&gt;</code>, <code>&lt;Global&gt;</code><br>
-<strong>Module:</strong> mod_log_failure<br>
-<strong>Compatibility:</strong> 1.3.6rc1 and later
-
-<p>
-The <code>FailureEngine</code> directive toggles the logging of failures by
-<code>mod_log_failure</code>.
-
-<p>
-<hr>
-<h3><a name="FailureLog">ProxyLog</a></h3>
+<h3><a name="FailureLog">FailureLog</a></h3>
 <strong>Syntax:</strong> FailureLog <em>path|"none"</em><br>
 <strong>Default:</strong> None<br>
 <strong>Context:</strong> server config, <code>&lt;VirtualHost&gt;</code>, <code>&lt;Global&gt;</code><br>
@@ -78,7 +64,6 @@ unless <code>AllowLogSymlinks</code> is explicitly set to <em>on</em>
 
 <pre>
   &lt;IfModule mod_log_failure.c&gt;
-    FailureEngine on
     FailureLog /path/to/failures.log
   &lt;/IfModule&gt;
 </pre>
