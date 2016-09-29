@@ -1,0 +1,11 @@
+
+Directives:
+
+  FailureLog path fmt-name
+  FailureTypes Connection Authentication Transfers Timeouts
+
+Could mod_log_failure be correlated to the idea for ftpdiag?  Some simple
+tool/page that helps users diagnose common issues?
+
+Log ONLY in the JSON format, for now.  Provide a ftpdiag command-line tool
+(Go? Node?) which can read/visualize that log?
