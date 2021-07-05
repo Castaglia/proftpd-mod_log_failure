@@ -1,6 +1,6 @@
 /*
  * ProFTPD: mod_log_failure -- logs failures to a separate log file
- * Copyright (c) 2016 TJ Saunders
+ * Copyright (c) 2016-2021 TJ Saunders
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,13 +22,13 @@
 
 #include "conf.h"
 #include "privs.h"
-#include "mod_log.h"
+#include "logfmt.h"
 
 #define MOD_LOG_FAILURE_VERSION		"mod_log_failure/0.0"
 
 /* Make sure the version of proftpd is as necessary. */
-#if PROFTPD_VERSION_NUMBER < 0x0001030504
-# error "ProFTPD 1.3.5rc4 or later required"
+#if PROFTPD_VERSION_NUMBER < 0x0001030606
+# error "ProFTPD 1.3.6a or later required"
 #endif
 
 module log_failure_module;
