@@ -1,6 +1,6 @@
 /*
  * ProFTPD: mod_log_failure -- logs failures to a separate log file
- * Copyright (c) 2016 TJ Saunders
+ * Copyright (c) 2016-2022 TJ Saunders
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,23 +22,28 @@
 
 #include "conf.h"
 #include "privs.h"
-#include "mod_log.h"
+#include "logfmt.h"
+#include "json.h"
+#include "ccan-json.h"
 
 #define MOD_LOG_FAILURE_VERSION		"mod_log_failure/0.0"
 
 /* Make sure the version of proftpd is as necessary. */
-#if PROFTPD_VERSION_NUMBER < 0x0001030504
-# error "ProFTPD 1.3.5rc4 or later required"
+#if PROFTPD_VERSION_NUMBER < 0x0001030606
+# error "ProFTPD 1.3.6a or later required"
 #endif
 
 module log_failure_module;
 
-static int log_failure_fd = -1;
+static int log_failure_logfd = -1;
 static pool *log_failure_pool = NULL;
 static pr_table_t *log_failure_fields = NULL;
 static char *log_failure_fmt = NULL;
 
 static const char *trace_channel = "failure";
+
+#define LOG_FAILURE_EVENT_FL_CONNECT	0x0001
+#define LOG_FAILURE_EVENT_FL_DISCONNECT	0x0002
 
 /* Entries in the field table identify the field name, and the data type, for
  * e.g. JSON (or other) formatting: * Boolean, number, or string.
@@ -305,7 +310,7 @@ static void log_failure_mkjson(void *json, const char *field_name,
       break;
 
     case LOG_FAILURE_FIELD_TYPE_BOOLEAN:
-      field = json_mkbool(*((bool *) field_value));
+      field = json_mkbool(*((int *) field_value));
       break;
 
     default:
@@ -337,10 +342,10 @@ static char *get_meta_arg(pool *p, unsigned char *m, size_t *arglen) {
   return pstrdup(p, buf);
 }
 
-static int find_next_meta(pool *p, int flags, cmd_rec *cmd, unsigned char **fmt,
-    void *obj,
+static int find_next_meta(pool *p, int flags, cmd_rec *cmd,
+    unsigned char **fmt, void *obj,
     void (*mkfield)(void *, const char *, size_t, unsigned int, const void *)) {
-  struct field_info *fi;
+  const struct field_info *fi;
   unsigned char *m;
   unsigned int meta;
 
@@ -371,15 +376,15 @@ static int find_next_meta(pool *p, int flags, cmd_rec *cmd, unsigned char **fmt,
   return 0;
 }
 
-static int log_failure_mkmsg(int flags, pool *p, const unsigned char *fmt,
-    void *json,
+static int log_failure_mkmsg(int flags, pool *p, cmd_rec *cmd,
+    const unsigned char *fmt, void *json,
     void (*mkfield)(void *, const char *, size_t, unsigned int, const void *)) {
 
   if (flags == LOG_FAILURE_EVENT_FL_CONNECT &&
       session.prev_server == NULL) {
     unsigned int meta = LOG_FAILURE_META_CONNECT;
     const struct field_info *fi;
-    bool connecting = true;
+    int connecting = TRUE;
 
     fi = pr_table_kget(log_failure_fields, (const void *) &meta,
       sizeof(unsigned int), NULL);
@@ -389,11 +394,11 @@ static int log_failure_mkmsg(int flags, pool *p, const unsigned char *fmt,
 
   } else if (flags == LOG_FAILURE_EVENT_FL_DISCONNECT) {
     unsigned int meta = LOG_FAILURE_META_DISCONNECT;
-    struct field_info *fi;
-    bool disconnecting = true;
+    const struct field_info *fi;
+    int disconnecting = TRUE;
 
-    fi = pr_table_kget(field_idtab, (const void *) &meta, sizeof(unsigned int),
-      NULL);
+    fi = pr_table_kget(log_failure_fields, (const void *) &meta,
+      sizeof(unsigned int), NULL);
 
     mkfield(json, fi->field_name, fi->field_namelen, fi->field_type,
       &disconnecting);
@@ -403,7 +408,7 @@ static int log_failure_mkmsg(int flags, pool *p, const unsigned char *fmt,
     pr_signals_handle();
 
     if (*fmt == LOGFMT_META_START) {
-      find_next_meta(p, flags, cmd, &fmt, json, mkfield);
+      find_next_meta(p, flags, cmd, (unsigned char **) &fmt, json, mkfield);
 
     } else {
       fmt++;
@@ -413,18 +418,14 @@ static int log_failure_mkmsg(int flags, pool *p, const unsigned char *fmt,
   return 0;
 }
 
-static void log_failure_mkjson(void *json, const char *field_name,
-    size_t field_namelen, unsigned int field_type, const void *field_value) {
-}
-
-static int log_failure_fmt_msg(pool *p, const unsigned char *fmt,
+static int log_failure_fmt_msg(pool *p, const unsigned char *fmt, cmd_rec *cmd,
     const char *event_name, char **msg, size_t *msg_len, int flags) {
   int res;
   char errstr[256], *json = NULL;
   void *obj = NULL;
 
   obj = json_mkobject();
-  res = log_failure_mkmsg(flags, p, fmt, obj, log_failure_mkjson);
+  res = log_failure_mkmsg(flags, p, cmd, fmt, obj, log_failure_mkjson);
 
   if (!json_check(obj, errstr)) {
     pr_log_debug(DEBUG3, MOD_LOG_FAILURE_VERSION
@@ -439,8 +440,8 @@ static int log_failure_fmt_msg(pool *p, const unsigned char *fmt,
   pr_trace_msg(trace_channel, 3, "generated JSON payload: %s", json);
 
   *msg_len = strlen(json);
-  *msg = palloc(p, *payload_len);
-  memcpy(*payload, json, *payload_len);
+  *msg = palloc(p, *msg_len);
+  memcpy(*msg, json, *msg_len);
 
   /* To avoid a memory leak via malloc(3), we have to explicitly call free(3)
    * on the returned JSON string.  Which is why we duplicate it out of the
@@ -454,6 +455,7 @@ static int log_failure_fmt_msg(pool *p, const unsigned char *fmt,
 
 static void log_failure_event(const char *event_name, int flags) {
   int res;
+  cmd_rec *cmd = NULL;
   char *msg = NULL;
   size_t msg_len = 0;
   pool *p;
@@ -461,20 +463,20 @@ static void log_failure_event(const char *event_name, int flags) {
   p = make_sub_pool(log_failure_pool);
   pr_pool_tag(p, "FailureLog Message Pool");
 
-  res = log_failure_fmt_msg(p, log_failure_fmt, event_name, &msg, &msg_len,
+  res = log_failure_fmt_msg(p, log_failure_fmt, cmd, event_name, &msg, &msg_len,
     flags);
   if (res < 0) {
     pr_trace_msg(trace_channel, 2, "error formatting message: %s",
       strerror(errno));
 
   } else {
-    res = write(log_failure_fd, msg, msg_len);
+    res = write(log_failure_logfd, msg, msg_len);
     while (res < 0) {
       int xerrno = errno;
 
       if (xerrno == EINTR) {
         pr_signals_handle();
-        res = write(log_failure_fd, msg, msg_len);
+        res = write(log_failure_logfd, msg, msg_len);
         continue;
       }
 
@@ -545,9 +547,12 @@ MODRET set_failurelog(cmd_rec *cmd) {
 #if defined(PR_SHARED_MODULE)
 static void log_failure_mod_unload_ev(const void *event_data, void *user_data) {
   if (strcmp("mod_log_failure.c", (const char *) event_data) == 0) {
-    pr_event_unregister(&log_failure_module, NULL);
+    pr_event_unregister(&log_failure_module, NULL, NULL);
     destroy_pool(log_failure_pool);
     log_failure_pool = NULL;
+
+    (void) close(log_failure_logfd);
+    log_failure_logfd = -1;
   }
 }
 #endif /* PR_SHARED_MODULE */
